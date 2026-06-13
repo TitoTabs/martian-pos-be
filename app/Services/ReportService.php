@@ -31,6 +31,25 @@ class ReportService
     }
 
     /**
+     * Resolve a [start, end] range from either a period keyword or an
+     * explicit custom range. When both dates are present they take
+     * precedence (covering period=custom); otherwise the keyword is used.
+     *
+     * @return array{0: Carbon, 1: Carbon}
+     */
+    public function resolveRange(?string $period, ?string $startDate, ?string $endDate): array
+    {
+        if ($startDate !== null && $endDate !== null) {
+            return [
+                Carbon::parse($startDate)->startOfDay(),
+                Carbon::parse($endDate)->endOfDay(),
+            ];
+        }
+
+        return $this->range($period ?? 'today');
+    }
+
+    /**
      * Financial sales summary: total_sales combines real POS sales with
      * manual sales adjustments, while orders/items reflect POS only.
      *

@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Http\Controllers\Concerns\ResolvesReportRange;
 use App\Http\Resources\ExpenseResource;
 use App\Http\Resources\ManualSalesAdjustmentResource;
 use App\Http\Resources\SaleResource;
@@ -12,17 +13,18 @@ use App\Models\Sale;
 use App\Services\ReportService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
-use Illuminate\Support\Carbon;
 
 class ReportController extends Controller
 {
+    use ResolvesReportRange;
+
     public function __construct(private readonly ReportService $reports)
     {
     }
 
     public function sales(Request $request): JsonResponse
     {
-        $range = $this->reports->range($this->period($request));
+        $range = $this->resolveReportRange($request, $this->reports);
         $sales = Sale::with('items.addons')
             ->whereBetween('created_at', $range)
             ->notCancelled()
@@ -48,7 +50,7 @@ class ReportController extends Controller
 
     public function expenses(Request $request): JsonResponse
     {
-        $range = $this->reports->range($this->period($request));
+        $range = $this->resolveReportRange($request, $this->reports);
         $expenses = Expense::whereBetween('date', [$range[0]->toDateString(), $range[1]->toDateString()])
             ->orderByDesc('date')
             ->orderByDesc('id')
@@ -64,7 +66,7 @@ class ReportController extends Controller
 
     public function inventory(Request $request): JsonResponse
     {
-        $range = $this->reports->range($this->period($request));
+        $range = $this->resolveReportRange($request, $this->reports);
 
         $usage = collect($this->reports->inventoryUsage($range))
             ->keyBy('inventory_item_id');
@@ -93,7 +95,7 @@ class ReportController extends Controller
 
     public function savings(Request $request): JsonResponse
     {
-        $range = $this->savingsRange($request);
+        $range = $this->resolveReportRange($request, $this->reports);
         $summary = $this->reports->salesSummary($range);
 
         return response()->json([
@@ -104,36 +106,5 @@ class ReportController extends Controller
                 'total_expenses' => $this->reports->totalExpenses($range),
             ],
         ]);
-    }
-
-    /**
-     * Savings supports an explicit custom date range in addition to the
-     * period keywords. When start/end dates are supplied they win.
-     *
-     * @return array{0: Carbon, 1: Carbon}
-     */
-    private function savingsRange(Request $request): array
-    {
-        $validated = $request->validate([
-            'period' => ['sometimes', 'in:today,week,month,year'],
-            'start_date' => ['sometimes', 'required_with:end_date', 'date'],
-            'end_date' => ['sometimes', 'required_with:start_date', 'date', 'after_or_equal:start_date'],
-        ]);
-
-        if (! empty($validated['start_date']) && ! empty($validated['end_date'])) {
-            return [
-                Carbon::parse($validated['start_date'])->startOfDay(),
-                Carbon::parse($validated['end_date'])->endOfDay(),
-            ];
-        }
-
-        return $this->reports->range($this->period($request));
-    }
-
-    private function period(Request $request): string
-    {
-        return $request->validate([
-            'period' => ['sometimes', 'in:today,week,month,year'],
-        ])['period'] ?? 'today';
     }
 }
