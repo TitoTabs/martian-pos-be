@@ -25,9 +25,15 @@ class ReportController extends Controller
     public function sales(Request $request): JsonResponse
     {
         $range = $this->resolveReportRange($request, $this->reports);
+
+        $paymentMethod = $request->validate([
+            'payment_method' => ['sometimes', 'in:cash,gcash,card'],
+        ])['payment_method'] ?? null;
+
         $sales = Sale::with('items.addons')
             ->whereBetween('created_at', $range)
             ->notCancelled()
+            ->when($paymentMethod, fn ($query) => $query->where('payment_method', $paymentMethod))
             ->latest()
             ->get();
 
@@ -41,7 +47,7 @@ class ReportController extends Controller
 
         return response()->json([
             'data' => [
-                ...$this->reports->salesSummary($range),
+                ...$this->reports->salesSummary($range, $paymentMethod),
                 'sales' => SaleResource::collection($sales),
                 'manual_adjustments' => ManualSalesAdjustmentResource::collection($adjustments),
             ],

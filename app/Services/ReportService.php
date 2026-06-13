@@ -61,9 +61,9 @@ class ReportService
      * @param array{0: Carbon, 1: Carbon} $range
      * @return array{pos_sales_total: float, manual_sales_total: float, total_sales: float, total_orders: int, total_items_sold: int}
      */
-    public function salesSummary(array $range): array
+    public function salesSummary(array $range, ?string $paymentMethod = null): array
     {
-        $posSales = (float) $this->revenueItems($range)->sum('line_total');
+        $posSales = (float) $this->revenueItems($range, $paymentMethod)->sum('line_total');
         $manualSales = $this->manualSalesTotal($range);
 
         return [
@@ -73,24 +73,27 @@ class ReportService
             // Orders that contain at least one revenue-counting item.
             'total_orders' => Sale::whereBetween('created_at', $range)
                 ->notCancelled()
+                ->when($paymentMethod, fn (Builder $query) => $query->where('payment_method', $paymentMethod))
                 ->whereHas('items', $this->excludesNonRevenue())
                 ->count(),
-            'total_items_sold' => (int) $this->revenueItems($range)->sum('quantity'),
+            'total_items_sold' => (int) $this->revenueItems($range, $paymentMethod)->sum('quantity'),
         ];
     }
 
     /**
      * Sale items that count toward revenue: within range, on non-cancelled
      * sales, excluding non-revenue categories (Pastries). Items whose
-     * product was since deleted still count (treated as revenue).
+     * product was since deleted still count (treated as revenue). An
+     * optional payment method narrows to that tender.
      *
      * @param  array{0: Carbon, 1: Carbon}  $range
      * @return Builder<SaleItem>
      */
-    private function revenueItems(array $range): Builder
+    private function revenueItems(array $range, ?string $paymentMethod = null): Builder
     {
         return SaleItem::whereBetween('created_at', $range)
-            ->whereHas('sale', fn (Builder $query) => $query->notCancelled())
+            ->whereHas('sale', fn (Builder $query) => $query->notCancelled()
+                ->when($paymentMethod, fn (Builder $q) => $q->where('payment_method', $paymentMethod)))
             ->where($this->excludesNonRevenue());
     }
 
