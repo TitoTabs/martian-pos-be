@@ -12,7 +12,7 @@ class SaleController extends Controller
 {
     public function index(): AnonymousResourceCollection
     {
-        $sales = Sale::with('items.addons')->latest()->paginate(15);
+        $sales = Sale::with('items.addons')->notCancelled()->latest()->paginate(15);
 
         return SaleResource::collection($sales);
     }

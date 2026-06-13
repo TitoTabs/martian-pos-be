@@ -24,6 +24,7 @@ class ReportController extends Controller
         $range = $this->reports->range($this->period($request));
         $sales = Sale::with('items.addons')
             ->whereBetween('created_at', $range)
+            ->notCancelled()
             ->latest()
             ->get();
 

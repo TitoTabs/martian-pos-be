@@ -32,6 +32,7 @@ Route::get('/addons', [AddonController::class, 'index']);
 Route::post('/sales', [SaleController::class, 'store']);
 Route::get('/orders', [OrderController::class, 'index']);
 Route::patch('/orders/{sale}/status', [OrderController::class, 'updateStatus']);
+Route::patch('/orders/{sale}/cancel', [OrderController::class, 'cancel']);
 
 /*
 |--------------------------------------------------------------------------

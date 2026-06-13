@@ -37,15 +37,17 @@ class ReportService
      */
     public function salesSummary(array $range): array
     {
-        $posSales = (float) Sale::whereBetween('created_at', $range)->sum('total');
+        $posSales = (float) Sale::whereBetween('created_at', $range)->notCancelled()->sum('total');
         $manualSales = $this->manualSalesTotal($range);
 
         return [
             'pos_sales_total' => $posSales,
             'manual_sales_total' => $manualSales,
             'total_sales' => round($posSales + $manualSales, 2),
-            'total_orders' => Sale::whereBetween('created_at', $range)->count(),
-            'total_items_sold' => (int) SaleItem::whereBetween('created_at', $range)->sum('quantity'),
+            'total_orders' => Sale::whereBetween('created_at', $range)->notCancelled()->count(),
+            'total_items_sold' => (int) SaleItem::whereBetween('created_at', $range)
+                ->whereHas('sale', fn ($query) => $query->notCancelled())
+                ->sum('quantity'),
         ];
     }
 
@@ -80,6 +82,7 @@ class ReportService
     public function topProducts(array $range, int $limit = 5): array
     {
         return SaleItem::whereBetween('created_at', $range)
+            ->whereHas('sale', fn ($query) => $query->notCancelled())
             ->groupBy('product_name')
             ->selectRaw('product_name, SUM(quantity) as quantity_sold, SUM(line_total) as revenue')
             ->orderByDesc('quantity_sold')
@@ -116,8 +119,10 @@ class ReportService
     public function inventoryUsage(array $range): array
     {
         $fromRecipes = DB::table('sale_items')
+            ->join('sales', 'sales.id', '=', 'sale_items.sale_id')
             ->join('product_ingredients', 'product_ingredients.product_id', '=', 'sale_items.product_id')
             ->join('inventory_items', 'inventory_items.id', '=', 'product_ingredients.inventory_item_id')
+            ->where('sales.status', '!=', Sale::CANCELLED)
             ->whereBetween('sale_items.created_at', $range)
             ->groupBy('inventory_items.id', 'inventory_items.name', 'inventory_items.unit')
             ->selectRaw('inventory_items.id, inventory_items.name, inventory_items.unit, SUM(sale_items.quantity * product_ingredients.quantity) as used')
@@ -125,9 +130,11 @@ class ReportService
 
         $fromAddons = DB::table('sale_item_addons')
             ->join('sale_items', 'sale_items.id', '=', 'sale_item_addons.sale_item_id')
+            ->join('sales', 'sales.id', '=', 'sale_items.sale_id')
             ->join('addons', 'addons.id', '=', 'sale_item_addons.addon_id')
             ->join('inventory_items', 'inventory_items.id', '=', 'addons.inventory_item_id')
             ->whereNotNull('addons.inventory_item_id')
+            ->where('sales.status', '!=', Sale::CANCELLED)
             ->whereBetween('sale_items.created_at', $range)
             ->groupBy('inventory_items.id', 'inventory_items.name', 'inventory_items.unit')
             ->selectRaw('inventory_items.id, inventory_items.name, inventory_items.unit, SUM(sale_items.quantity * addons.quantity_used) as used')

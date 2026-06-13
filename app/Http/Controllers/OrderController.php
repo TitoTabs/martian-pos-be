@@ -4,8 +4,10 @@ namespace App\Http\Controllers;
 
 use App\Http\Resources\SaleResource;
 use App\Models\Sale;
+use App\Services\SaleService;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\AnonymousResourceCollection;
+use Illuminate\Validation\ValidationException;
 
 class OrderController extends Controller
 {
@@ -37,5 +39,20 @@ class OrderController extends Controller
         $sale->update($data);
 
         return new SaleResource($sale->load('items.addons'));
+    }
+
+    /**
+     * Cancel an active order: restore its inventory and mark it cancelled
+     * so it leaves the queue and is excluded from every sales figure.
+     */
+    public function cancel(Sale $sale, SaleService $saleService): SaleResource
+    {
+        if (! in_array($sale->status, Sale::ACTIVE_STATUSES, true)) {
+            throw ValidationException::withMessages([
+                'status' => 'Only active orders can be cancelled.',
+            ]);
+        }
+
+        return new SaleResource($saleService->cancel($sale));
     }
 }

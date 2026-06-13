@@ -100,4 +100,40 @@ class SaleService
             }
         }
     }
+
+    /**
+     * Cancel an order: restore the inventory it consumed and mark it
+     * cancelled so it drops out of the queue and every sales figure.
+     * The sale row is kept (not deleted) so cancellations stay auditable.
+     */
+    public function cancel(Sale $sale): Sale
+    {
+        return DB::transaction(function () use ($sale) {
+            $sale->load('items.addons');
+
+            foreach ($sale->items as $item) {
+                $product = Product::with('ingredients')->find($item->product_id);
+
+                if ($product) {
+                    foreach ($product->ingredients as $ingredient) {
+                        InventoryItem::whereKey($ingredient->id)
+                            ->increment('stock', (float) $ingredient->pivot->quantity * $item->quantity);
+                    }
+                }
+
+                $addons = Addon::whereIn('id', $item->addons->pluck('addon_id'))->get();
+
+                foreach ($addons as $addon) {
+                    if ($addon->inventory_item_id && $addon->quantity_used) {
+                        InventoryItem::whereKey($addon->inventory_item_id)
+                            ->increment('stock', (float) $addon->quantity_used * $item->quantity);
+                    }
+                }
+            }
+
+            $sale->update(['status' => Sale::CANCELLED]);
+
+            return $sale->load('items.addons');
+        });
+    }
 }

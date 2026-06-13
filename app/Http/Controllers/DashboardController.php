@@ -30,7 +30,7 @@ class DashboardController extends Controller
                 'top_products' => $reports->topProducts($range),
                 'low_stock' => InventoryItemResource::collection($reports->lowStockInventory()),
                 'recent_sales' => SaleResource::collection(
-                    Sale::with('items.addons')->latest()->limit(5)->get()
+                    Sale::with('items.addons')->notCancelled()->latest()->limit(5)->get()
                 ),
                 'recent_expenses' => ExpenseResource::collection(
                     Expense::query()->orderByDesc('date')->orderByDesc('id')->limit(5)->get()
