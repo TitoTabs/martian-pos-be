@@ -12,6 +12,7 @@ use App\Models\Sale;
 use App\Services\ReportService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Carbon;
 
 class ReportController extends Controller
 {
@@ -92,7 +93,7 @@ class ReportController extends Controller
 
     public function savings(Request $request): JsonResponse
     {
-        $range = $this->reports->range($this->period($request));
+        $range = $this->savingsRange($request);
         $summary = $this->reports->salesSummary($range);
 
         return response()->json([
@@ -103,6 +104,30 @@ class ReportController extends Controller
                 'total_expenses' => $this->reports->totalExpenses($range),
             ],
         ]);
+    }
+
+    /**
+     * Savings supports an explicit custom date range in addition to the
+     * period keywords. When start/end dates are supplied they win.
+     *
+     * @return array{0: Carbon, 1: Carbon}
+     */
+    private function savingsRange(Request $request): array
+    {
+        $validated = $request->validate([
+            'period' => ['sometimes', 'in:today,week,month,year'],
+            'start_date' => ['sometimes', 'required_with:end_date', 'date'],
+            'end_date' => ['sometimes', 'required_with:start_date', 'date', 'after_or_equal:start_date'],
+        ]);
+
+        if (! empty($validated['start_date']) && ! empty($validated['end_date'])) {
+            return [
+                Carbon::parse($validated['start_date'])->startOfDay(),
+                Carbon::parse($validated['end_date'])->endOfDay(),
+            ];
+        }
+
+        return $this->reports->range($this->period($request));
     }
 
     private function period(Request $request): string
