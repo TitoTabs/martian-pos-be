@@ -31,16 +31,13 @@ class ReportController extends Controller
         ])['payment_method'] ?? null;
 
         $sales = Sale::with('items.addons')
-            ->whereBetween('created_at', $range)
+            ->whereBetween('created_at', $range->timestamps())
             ->notCancelled()
             ->when($paymentMethod, fn ($query) => $query->where('payment_method', $paymentMethod))
             ->latest()
             ->get();
 
-        $adjustments = ManualSalesAdjustment::whereBetween('date', [
-                $range[0]->toDateString(),
-                $range[1]->toDateString(),
-            ])
+        $adjustments = ManualSalesAdjustment::whereBetween('date', $range->dates())
             ->orderByDesc('date')
             ->orderByDesc('id')
             ->get();
@@ -57,7 +54,7 @@ class ReportController extends Controller
     public function expenses(Request $request): JsonResponse
     {
         $range = $this->resolveReportRange($request, $this->reports);
-        $expenses = Expense::whereBetween('date', [$range[0]->toDateString(), $range[1]->toDateString()])
+        $expenses = Expense::whereBetween('date', $range->dates())
             ->orderByDesc('date')
             ->orderByDesc('id')
             ->get();

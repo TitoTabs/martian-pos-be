@@ -8,6 +8,7 @@ use App\Models\InventoryItem;
 use App\Models\ManualSalesAdjustment;
 use App\Models\Sale;
 use App\Models\SaleItem;
+use App\Support\ReportRange;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Support\Carbon;
@@ -15,19 +16,76 @@ use Illuminate\Support\Facades\DB;
 
 class ReportService
 {
+    public const DEFAULT_SHIFT_START = '21:00';
+
+    public const DEFAULT_SHIFT_END = '03:00';
+
     /**
-     * Resolve a period keyword into a [start, end] date range.
+     * Resolve a period keyword into a business-shift range (Asia/Manila).
      *
-     * @return array{0: Carbon, 1: Carbon}
+     * The store's operating shift can cross midnight (default 21:00 → 03:00),
+     * so a "business day" runs from the shift start to the next morning's
+     * shift end. The current business date is the day the active/most-recent
+     * shift started.
      */
-    public function range(string $period): array
-    {
-        return match ($period) {
-            'week' => [now()->startOfWeek(), now()->endOfWeek()],
-            'month' => [now()->startOfMonth(), now()->endOfMonth()],
-            'year' => [now()->startOfYear(), now()->endOfYear()],
-            default => [now()->startOfDay(), now()->endOfDay()],
+    public function range(
+        string $period,
+        string $startTime = self::DEFAULT_SHIFT_START,
+        string $endTime = self::DEFAULT_SHIFT_END,
+    ): ReportRange {
+        // Business date = today if the shift has started today, else yesterday
+        // (covers the post-midnight tail of yesterday's shift and daytime hours).
+        $businessDate = now()->gte(now()->setTimeFromTimeString($startTime))
+            ? now()->startOfDay()
+            : now()->subDay()->startOfDay();
+
+        [$firstDate, $lastDate] = match ($period) {
+            'week' => [$businessDate->copy()->startOfWeek(), $businessDate->copy()->endOfWeek()],
+            'month' => [$businessDate->copy()->startOfMonth(), $businessDate->copy()->endOfMonth()],
+            'year' => [$businessDate->copy()->startOfYear(), $businessDate->copy()->endOfYear()],
+            default => [$businessDate->copy(), $businessDate->copy()],
         };
+
+        return $this->shiftRange($firstDate, $lastDate, $startTime, $endTime);
+    }
+
+    /**
+     * Resolve an explicit custom business-date range into a shift range.
+     */
+    public function customRange(
+        string $startDate,
+        string $endDate,
+        string $startTime = self::DEFAULT_SHIFT_START,
+        string $endTime = self::DEFAULT_SHIFT_END,
+    ): ReportRange {
+        return $this->shiftRange(
+            Carbon::parse($startDate)->startOfDay(),
+            Carbon::parse($endDate)->startOfDay(),
+            $startTime,
+            $endTime,
+        );
+    }
+
+    /**
+     * Build a ReportRange spanning the shifts of the given business dates.
+     * If the shift end is at/after the start (crosses midnight), the closing
+     * time belongs to the next calendar morning.
+     */
+    private function shiftRange(Carbon $firstDate, Carbon $lastDate, string $startTime, string $endTime): ReportRange
+    {
+        $start = $firstDate->copy()->setTimeFromTimeString($startTime);
+        $end = $lastDate->copy()->setTimeFromTimeString($endTime);
+
+        if ($endTime <= $startTime) {
+            $end->addDay();
+        }
+
+        return new ReportRange(
+            start: $start,
+            end: $end,
+            dateStart: $firstDate->toDateString(),
+            dateEnd: $lastDate->toDateString(),
+        );
     }
 
     /**
@@ -39,10 +97,9 @@ class ReportService
      * alongside coffee — are excluded from every business performance
      * number while the order itself still exists in history.
      *
-     * @param array{0: Carbon, 1: Carbon} $range
      * @return array{pos_sales_total: float, manual_sales_total: float, total_sales: float, total_orders: int, total_items_sold: int}
      */
-    public function salesSummary(array $range, ?string $paymentMethod = null): array
+    public function salesSummary(ReportRange $range, ?string $paymentMethod = null): array
     {
         $posSales = (float) $this->revenueItems($range, $paymentMethod)->sum('line_total');
         $manualSales = $this->manualSalesTotal($range);
@@ -52,7 +109,7 @@ class ReportService
             'manual_sales_total' => $manualSales,
             'total_sales' => round($posSales + $manualSales, 2),
             // Orders that contain at least one revenue-counting item.
-            'total_orders' => Sale::whereBetween('created_at', $range)
+            'total_orders' => Sale::whereBetween('created_at', $range->timestamps())
                 ->notCancelled()
                 ->when($paymentMethod, fn (Builder $query) => $query->where('payment_method', $paymentMethod))
                 ->whereHas('items', $this->excludesNonRevenue())
@@ -62,17 +119,16 @@ class ReportService
     }
 
     /**
-     * Sale items that count toward revenue: within range, on non-cancelled
-     * sales, excluding non-revenue categories (Pastries). Items whose
-     * product was since deleted still count (treated as revenue). An
-     * optional payment method narrows to that tender.
+     * Sale items that count toward revenue: within the shift, on non-cancelled
+     * sales, excluding non-revenue categories (Pastries). Items whose product
+     * was since deleted still count (treated as revenue). An optional payment
+     * method narrows to that tender.
      *
-     * @param  array{0: Carbon, 1: Carbon}  $range
      * @return Builder<SaleItem>
      */
-    private function revenueItems(array $range, ?string $paymentMethod = null): Builder
+    private function revenueItems(ReportRange $range, ?string $paymentMethod = null): Builder
     {
-        return SaleItem::whereBetween('created_at', $range)
+        return SaleItem::whereBetween('created_at', $range->timestamps())
             ->whereHas('sale', fn (Builder $query) => $query->notCancelled()
                 ->when($paymentMethod, fn (Builder $q) => $q->where('payment_method', $paymentMethod)))
             ->where($this->excludesNonRevenue());
@@ -91,35 +147,22 @@ class ReportService
         );
     }
 
-    /**
-     * @param array{0: Carbon, 1: Carbon} $range
-     */
-    public function manualSalesTotal(array $range): float
+    public function manualSalesTotal(ReportRange $range): float
     {
-        return (float) ManualSalesAdjustment::whereBetween('date', [
-            $range[0]->toDateString(),
-            $range[1]->toDateString(),
-        ])->sum('amount');
+        return (float) ManualSalesAdjustment::whereBetween('date', $range->dates())->sum('amount');
+    }
+
+    public function totalExpenses(ReportRange $range): float
+    {
+        return (float) Expense::whereBetween('date', $range->dates())->sum('total_amount');
     }
 
     /**
-     * @param array{0: Carbon, 1: Carbon} $range
-     */
-    public function totalExpenses(array $range): float
-    {
-        return (float) Expense::whereBetween('date', [
-            $range[0]->toDateString(),
-            $range[1]->toDateString(),
-        ])->sum('total_amount');
-    }
-
-    /**
-     * Best-selling products by quantity within the range.
+     * Best-selling products by quantity within the shift.
      *
-     * @param array{0: Carbon, 1: Carbon} $range
      * @return array<int, array{name: string, quantity_sold: int, revenue: float}>
      */
-    public function topProducts(array $range, int $limit = 5): array
+    public function topProducts(ReportRange $range, int $limit = 5): array
     {
         return $this->revenueItems($range)
             ->groupBy('product_name')
@@ -149,20 +192,19 @@ class ReportService
     }
 
     /**
-     * Inventory usage within the range, derived from product recipes
+     * Inventory usage within the shift, derived from product recipes
      * and add-on links applied to what was sold.
      *
-     * @param array{0: Carbon, 1: Carbon} $range
      * @return array<int, array{inventory_item_id: int, name: string, unit: string, used: float}>
      */
-    public function inventoryUsage(array $range): array
+    public function inventoryUsage(ReportRange $range): array
     {
         $fromRecipes = DB::table('sale_items')
             ->join('sales', 'sales.id', '=', 'sale_items.sale_id')
             ->join('product_ingredients', 'product_ingredients.product_id', '=', 'sale_items.product_id')
             ->join('inventory_items', 'inventory_items.id', '=', 'product_ingredients.inventory_item_id')
             ->where('sales.status', '!=', Sale::CANCELLED)
-            ->whereBetween('sale_items.created_at', $range)
+            ->whereBetween('sale_items.created_at', $range->timestamps())
             ->groupBy('inventory_items.id', 'inventory_items.name', 'inventory_items.unit')
             ->selectRaw('inventory_items.id, inventory_items.name, inventory_items.unit, SUM(sale_items.quantity * product_ingredients.quantity) as used')
             ->get();
@@ -174,7 +216,7 @@ class ReportService
             ->join('inventory_items', 'inventory_items.id', '=', 'addons.inventory_item_id')
             ->whereNotNull('addons.inventory_item_id')
             ->where('sales.status', '!=', Sale::CANCELLED)
-            ->whereBetween('sale_items.created_at', $range)
+            ->whereBetween('sale_items.created_at', $range->timestamps())
             ->groupBy('inventory_items.id', 'inventory_items.name', 'inventory_items.unit')
             ->selectRaw('inventory_items.id, inventory_items.name, inventory_items.unit, SUM(sale_items.quantity * addons.quantity_used) as used')
             ->get();

@@ -31,7 +31,7 @@ class DashboardController extends Controller
                 'recent_sales' => SaleResource::collection(
                     Sale::with('items.addons')
                         ->notCancelled()
-                        ->whereBetween('created_at', $range)
+                        ->whereBetween('created_at', $range->timestamps())
                         ->latest()
                         ->limit(5)
                         ->get()
