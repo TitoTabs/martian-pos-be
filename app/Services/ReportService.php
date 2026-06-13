@@ -2,11 +2,13 @@
 
 namespace App\Services;
 
+use App\Enums\ProductCategory;
 use App\Models\Expense;
 use App\Models\InventoryItem;
 use App\Models\ManualSalesAdjustment;
 use App\Models\Sale;
 use App\Models\SaleItem;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
@@ -32,23 +34,58 @@ class ReportService
      * Financial sales summary: total_sales combines real POS sales with
      * manual sales adjustments, while orders/items reflect POS only.
      *
+     * Revenue figures are computed from sale *items* (not Sale::total) so
+     * non-revenue categories like Pastries — which an order may contain
+     * alongside coffee — are excluded from every business performance
+     * number while the order itself still exists in history.
+     *
      * @param array{0: Carbon, 1: Carbon} $range
      * @return array{pos_sales_total: float, manual_sales_total: float, total_sales: float, total_orders: int, total_items_sold: int}
      */
     public function salesSummary(array $range): array
     {
-        $posSales = (float) Sale::whereBetween('created_at', $range)->notCancelled()->sum('total');
+        $posSales = (float) $this->revenueItems($range)->sum('line_total');
         $manualSales = $this->manualSalesTotal($range);
 
         return [
             'pos_sales_total' => $posSales,
             'manual_sales_total' => $manualSales,
             'total_sales' => round($posSales + $manualSales, 2),
-            'total_orders' => Sale::whereBetween('created_at', $range)->notCancelled()->count(),
-            'total_items_sold' => (int) SaleItem::whereBetween('created_at', $range)
-                ->whereHas('sale', fn ($query) => $query->notCancelled())
-                ->sum('quantity'),
+            // Orders that contain at least one revenue-counting item.
+            'total_orders' => Sale::whereBetween('created_at', $range)
+                ->notCancelled()
+                ->whereHas('items', $this->excludesNonRevenue())
+                ->count(),
+            'total_items_sold' => (int) $this->revenueItems($range)->sum('quantity'),
         ];
+    }
+
+    /**
+     * Sale items that count toward revenue: within range, on non-cancelled
+     * sales, excluding non-revenue categories (Pastries). Items whose
+     * product was since deleted still count (treated as revenue).
+     *
+     * @param  array{0: Carbon, 1: Carbon}  $range
+     * @return Builder<SaleItem>
+     */
+    private function revenueItems(array $range): Builder
+    {
+        return SaleItem::whereBetween('created_at', $range)
+            ->whereHas('sale', fn (Builder $query) => $query->notCancelled())
+            ->where($this->excludesNonRevenue());
+    }
+
+    /**
+     * Constraint excluding sale items whose product is a non-revenue
+     * category. `whereDoesntHave` keeps items with no product (deleted)
+     * as revenue rather than dropping them.
+     */
+    private function excludesNonRevenue(): \Closure
+    {
+        return fn (Builder $query) => $query->whereDoesntHave(
+            'product',
+            fn (Builder $product) => $product->whereIn('category', ProductCategory::nonRevenue()),
+        );
     }
 
     /**
@@ -81,8 +118,7 @@ class ReportService
      */
     public function topProducts(array $range, int $limit = 5): array
     {
-        return SaleItem::whereBetween('created_at', $range)
-            ->whereHas('sale', fn ($query) => $query->notCancelled())
+        return $this->revenueItems($range)
             ->groupBy('product_name')
             ->selectRaw('product_name, SUM(quantity) as quantity_sold, SUM(line_total) as revenue')
             ->orderByDesc('quantity_sold')
